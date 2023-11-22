@@ -399,6 +399,7 @@ static int modeset_find_plane(int fd, struct modeset_output *out)
 			 * left in the UAPI headers as well.
 			 */
 			if (get_property_value(fd, props, "type") == DRM_PLANE_TYPE_PRIMARY) {
+				fprintf(stdout, "Found the PRIMARY plane\n");
 				found_primary = true;
 				out->plane.id = plane_id;
 				ret = 0;
@@ -419,6 +420,71 @@ static int modeset_find_plane(int fd, struct modeset_output *out)
 	return ret;
 }
 
+static int modeset_find_overlay_plane(int fd, struct modeset_output *out)
+{
+	drmModePlaneResPtr plane_res;
+	bool found_overlay = false;
+	int i, ret = -EINVAL;
+
+	plane_res = drmModeGetPlaneResources(fd);
+	if (!plane_res) {
+		fprintf(stderr, "drmModeGetPlaneResources failed: %s\n",
+				strerror(errno));
+		return -ENOENT;
+	}
+
+	/* iterates through all planes of a certain device */
+	for (i = 0; (i < plane_res->count_planes) && !found_overlay; i++) {
+		int plane_id = plane_res->planes[i];
+
+		drmModePlanePtr plane = drmModeGetPlane(fd, plane_id);
+		if (!plane) {
+			fprintf(stderr, "drmModeGetPlane(%u) failed: %s\n", plane_id,
+					strerror(errno));
+			continue;
+		}
+
+		/* check if the plane can be used by our CRTC */
+		if (plane->possible_crtcs & (1 << out->crtc_index)) {
+			drmModeObjectPropertiesPtr props =
+				drmModeObjectGetProperties(fd, plane_id, DRM_MODE_OBJECT_PLANE);
+
+			/* Get the "type" property to check if this is a primary
+			 * plane. Type property is special, as its enum value is
+			 * defined in UAPI headers. For the properties that are
+			 * not defined in the UAPI headers, we would have to
+			 * give kernel the property name and it would return the
+			 * corresponding enum value. We could also do this for
+			 * the "type" property, but it would make this simple
+			 * example more complex. The reason why defining enum
+			 * values for kernel properties in UAPI headers is
+			 * deprecated is that string names are easier to both
+			 * (userspace and kernel) make unique and keep
+			 * consistent between drivers and kernel versions. But
+			 * in order to not break userspace, some properties were
+			 * left in the UAPI headers as well.
+			 */
+			if (get_property_value(fd, props, "type") == DRM_PLANE_TYPE_OVERLAY) {
+				fprintf(stdout, "Found the OVERLAY plane\n");
+				found_overlay = true;
+				out->plane.id = plane_id;
+				ret = 0;
+			}
+
+			drmModeFreeObjectProperties(props);
+		}
+
+		drmModeFreePlane(plane);
+	}
+
+	drmModeFreePlaneResources(plane_res);
+
+	if (found_overlay)
+		fprintf(stdout, "found overlay plane, id: %d\n", out->plane.id);
+	else
+		fprintf(stdout, "couldn't find a overlay plane\n");
+	return ret;
+}
 /*
  * modeset_drm_object_fini() is a new helper function that destroys CRTCs,
  * connectors and planes
@@ -593,6 +659,8 @@ static int modeset_setup_framebuffers(int fd, drmModeConnector *conn,
 		/* copy mode info to buffer */
 		out->bufs[i].width = conn->modes[0].hdisplay;
 		out->bufs[i].height = conn->modes[0].vdisplay;
+		fprintf(stdout, "bufs[%u].width = %u \n", i, out->bufs[i].width);
+		fprintf(stdout, "bufs[%u].height = %u \n", i, out->bufs[i].height);
 
 		/* create a framebuffer for the buffer */
 		ret = modeset_create_fb(fd, &out->bufs[i]);
@@ -607,7 +675,34 @@ static int modeset_setup_framebuffers(int fd, drmModeConnector *conn,
 
 	return 0;
 }
+static int modeset_setup_framebuffers_small(int fd, drmModeConnector *conn,
+				      struct modeset_output *out)
+{
+	int i, ret;
 
+	/* setup the front and back framebuffers */
+	for (i = 0; i < 2; i++) {
+
+		/* copy mode info to buffer */
+		//out->bufs[i].width = conn->modes[0].hdisplay;
+		//out->bufs[i].height = conn->modes[0].vdisplay;
+		out->bufs[i].width = 200;
+		out->bufs[i].height = 200;
+		fprintf(stdout, "bufs[%u].width = %u \n", i, out->bufs[i].width);
+		fprintf(stdout, "bufs[%u].height = %u \n", i, out->bufs[i].height);
+		/* create a framebuffer for the buffer */
+		ret = modeset_create_fb(fd, &out->bufs[i]);
+		if (ret) {
+			/* the second framebuffer creation failed, so
+			 * we have to destroy the first before returning */
+			if (i == 1)
+				modeset_destroy_fb(fd, &out->bufs[0]);
+			return ret;
+		}
+	}
+
+	return 0;
+}
 /*
  * modeset_output_destroy() is new. It destroys the objects (connector, crtc and
  * plane), front and back buffers, the mode blob property and then destroys the
@@ -721,6 +816,83 @@ out_error:
 	return NULL;
 }
 
+static struct modeset_output *modeset_output_overlay_create(int fd, drmModeRes *res,
+						    drmModeConnector *conn)
+{
+	int ret;
+	struct modeset_output *out;
+
+	/* creates an output structure */
+	out = malloc(sizeof(*out));
+	memset(out, 0, sizeof(*out));
+	out->connector.id = conn->connector_id;
+
+	/* check if a monitor is connected */
+	if (conn->connection != DRM_MODE_CONNECTED) {
+		fprintf(stderr, "ignoring unused connector %u\n",
+			conn->connector_id);
+		goto out_error;
+	}
+
+	/* check if there is at least one valid mode */
+	if (conn->count_modes == 0) {
+		fprintf(stderr, "no valid mode for connector %u\n",
+			conn->connector_id);
+		goto out_error;
+	}
+
+	/* copy the mode information into our output structure */
+	memcpy(&out->mode, &conn->modes[0], sizeof(out->mode));
+	/* create the blob property using out->mode and save its id in the output*/
+	if (drmModeCreatePropertyBlob(fd, &out->mode, sizeof(out->mode),
+	                              &out->mode_blob_id) != 0) {
+		fprintf(stderr, "couldn't create a blob property\n");
+		goto out_error;
+	}
+	fprintf(stderr, "mode for connector %u is %ux%u\n",
+	        conn->connector_id, out->bufs[0].width, out->bufs[0].height);
+
+	/* find a crtc for this connector */
+	ret = modeset_find_crtc(fd, res, conn, out);
+	if (ret) {
+		fprintf(stderr, "no valid crtc for connector %u\n",
+			conn->connector_id);
+		goto out_blob;
+	}
+
+	/* with a connector and crtc, find a primary plane */
+	ret = modeset_find_overlay_plane(fd, out);
+	if (ret) {
+		fprintf(stderr, "no valid plane for crtc %u\n", out->crtc.id);
+		goto out_blob;
+	}
+
+	/* gather properties of our connector, CRTC and planes */
+	ret = modeset_setup_objects(fd, out);
+	if (ret) {
+		fprintf(stderr, "cannot get plane properties\n");
+		goto out_blob;
+	}
+
+	/* setup front/back framebuffers for this CRTC */
+	ret = modeset_setup_framebuffers_small(fd, conn, out);
+	if (ret) {
+		fprintf(stderr, "cannot create framebuffers for connector %u\n",
+			conn->connector_id);
+		goto out_obj;
+	}
+
+	return out;
+
+out_obj:
+	modeset_destroy_objects(fd, out);
+out_blob:
+	drmModeDestroyPropertyBlob(fd, out->mode_blob_id);
+out_error:
+	free(out);
+	return NULL;
+}
+
 /*
  * modeset_prepare() changes a little bit. Now we use the new function
  * modeset_output_create() to allocate memory and setup the output.
@@ -731,7 +903,7 @@ static int modeset_prepare(int fd)
 	drmModeRes *res;
 	drmModeConnector *conn;
 	unsigned int i;
-	struct modeset_output *out;
+	struct modeset_output *out, *out_overlay;
 
 	/* retrieve resources */
 	res = drmModeGetResources(fd);
@@ -753,12 +925,14 @@ static int modeset_prepare(int fd)
 
 		/* create an output structure and free connector data */
 		out = modeset_output_create(fd, res, conn);
+		out_overlay = modeset_output_overlay_create(fd, res, conn);
 		drmModeFreeConnector(conn);
-		if (!out)
+		if (!out || !out_overlay)
 			continue;
 
 		/* link output into global list */
-		out->next = output_list;
+		out->next = out_overlay;
+		out_overlay->next = output_list;
 		output_list = out;
 	}
 	if (!output_list) {
@@ -813,6 +987,50 @@ static int modeset_atomic_prepare_commit(int fd, struct modeset_output *out,
 	if (set_drm_object_property(req, plane, "CRTC_X", 0) < 0)
 		return -1;
 	if (set_drm_object_property(req, plane, "CRTC_Y", 0) < 0)
+		return -1;
+	if (set_drm_object_property(req, plane, "CRTC_W", buf->width) < 0)
+		return -1;
+	if (set_drm_object_property(req, plane, "CRTC_H", buf->height) < 0)
+		return -1;
+
+	return 0;
+}
+
+static int modeset_atomic_prepare_commit_overlay(int fd, struct modeset_output *out,
+					 drmModeAtomicReq *req)
+{
+	struct drm_object *plane = &out->plane;
+	struct modeset_buf *buf = &out->bufs[out->front_buf ^ 1];
+
+	/* set id of the CRTC id that the connector is using */
+	if (set_drm_object_property(req, &out->connector, "CRTC_ID", out->crtc.id) < 0)
+		return -1;
+
+	/* set the mode id of the CRTC; this property receives the id of a blob
+	 * property that holds the struct that actually contains the mode info */
+	if (set_drm_object_property(req, &out->crtc, "MODE_ID", out->mode_blob_id) < 0)
+		return -1;
+
+	/* set the CRTC object as active */
+	if (set_drm_object_property(req, &out->crtc, "ACTIVE", 1) < 0)
+		return -1;
+
+	/* set properties of the plane related to the CRTC and the framebuffer */
+	if (set_drm_object_property(req, plane, "FB_ID", buf->fb) < 0)
+		return -1;
+	if (set_drm_object_property(req, plane, "CRTC_ID", out->crtc.id) < 0)
+		return -1;
+	if (set_drm_object_property(req, plane, "SRC_X", 0) < 0)
+		return -1;
+	if (set_drm_object_property(req, plane, "SRC_Y", 0) < 0)
+		return -1;
+	if (set_drm_object_property(req, plane, "SRC_W", buf->width << 16) < 0)
+		return -1;
+	if (set_drm_object_property(req, plane, "SRC_H", buf->height << 16) < 0)
+		return -1;
+	if (set_drm_object_property(req, plane, "CRTC_X", 300) < 0)
+		return -1;
+	if (set_drm_object_property(req, plane, "CRTC_Y", 200) < 0)
 		return -1;
 	if (set_drm_object_property(req, plane, "CRTC_W", buf->width) < 0)
 		return -1;
@@ -906,7 +1124,7 @@ static void modeset_draw_out(int fd, struct modeset_output *out)
 
 	/* prepare output for atomic commit */
 	req = drmModeAtomicAlloc();
-	ret = modeset_atomic_prepare_commit(fd, out, req);
+	ret = modeset_atomic_prepare_commit_overlay(fd, out, req);
 	if (ret < 0) {
 		fprintf(stderr, "prepare atomic commit failed, %d\n", errno);
 		return;
@@ -956,7 +1174,7 @@ static void modeset_page_flip_event(int fd, unsigned int frame,
 	for (iter = output_list; iter; iter = iter->next) {
 		if (iter->crtc.id == crtc_id) {
 			out = iter;
-			break;
+			//break;
 		}
 	}
 	if (out == NULL)
@@ -1018,6 +1236,7 @@ static int modeset_perform_modeset(int fd)
 		iter->r_up = iter->g_up = iter->b_up = true;
 
 		modeset_paint_framebuffer(iter);
+		fprintf(stdout, "color flashed once! \n");
 	}
 
 	/* initial modeset on all outputs */
@@ -1154,6 +1373,7 @@ int main(int argc, char **argv)
 
 	/* open the DRM device */
 	ret = modeset_open(&fd, card);
+	printf("fd: %d \n", fd);
 	if (ret)
 		goto out_return;
 
