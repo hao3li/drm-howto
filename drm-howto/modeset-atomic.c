@@ -1082,6 +1082,40 @@ static void modeset_paint_framebuffer(struct modeset_output *out)
 
 }
 
+static void modeset_paint_framebuffer_white(struct modeset_output *out)
+{
+	struct modeset_buf *buf;
+	unsigned int j, k, off;
+
+	/* draw on back framebuffer */
+	buf = &out->bufs[out->front_buf ^ 1];
+	for (j = 0; j < buf->height; ++j) {
+		for (k = 0; k < buf->width; ++k) {
+			off = buf->stride * j + k * 4;
+			*(uint32_t*)&buf->map[off] =
+				     (0xff << 16) | (0xff << 8) | 0xff;
+		}
+	}
+
+}
+
+static void modeset_paint_framebuffer_red(struct modeset_output *out)
+{
+	struct modeset_buf *buf;
+	unsigned int j, k, off;
+
+	/* draw on back framebuffer */
+	buf = &out->bufs[out->front_buf ^ 1];
+	for (j = 0; j < buf->height; ++j) {
+		for (k = 0; k < buf->width; ++k) {
+			off = buf->stride * j + k * 4;
+			*(uint32_t*)&buf->map[off] =
+				     (0xff << 16) | (0 << 8) | 0;
+		}
+	}
+
+}
+
 /*
  * modeset_draw_out() prepares the framebuffer with the drawing and then it asks
  * for the driver to perform an atomic commit. This will lead to a page-flip and
@@ -1120,7 +1154,8 @@ static void modeset_draw_out(int fd, struct modeset_output *out)
 	int ret, flags;
 
 	/* draw on framebuffer of the output */
-	modeset_paint_framebuffer(out);
+	/* This call only happens on top overlay layer */
+	modeset_paint_framebuffer_white(out);
 
 	/* prepare output for atomic commit */
 	req = drmModeAtomicAlloc();
@@ -1201,7 +1236,7 @@ static void modeset_page_flip_event(int fd, unsigned int frame,
 
 static int modeset_perform_modeset(int fd)
 {
-	int ret, flags;
+	int ret, flags, first = 0;
 	struct modeset_output *iter;
 	drmModeAtomicReq *req;
 
@@ -1235,7 +1270,11 @@ static int modeset_perform_modeset(int fd)
 		iter->b = rand() % 0xff;
 		iter->r_up = iter->g_up = iter->b_up = true;
 
-		modeset_paint_framebuffer(iter);
+		if (first == 0)
+			modeset_paint_framebuffer_red(iter);
+		else
+			modeset_paint_framebuffer_white(iter);
+		first++;
 		fprintf(stdout, "color flashed once! \n");
 	}
 
