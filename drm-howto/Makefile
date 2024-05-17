@@ -7,3 +7,6 @@ all:
 	gcc -o modeset-double-buffered modeset-double-buffered.c $(FLAGS)
 	gcc -o modeset-vsync modeset-vsync.c $(FLAGS)
 	gcc -o modeset-atomic modeset-atomic.c $(FLAGS)
+
+clean:
+	rm -f modeset-atomic modeset-vsync modeset-double-buffered modeset
