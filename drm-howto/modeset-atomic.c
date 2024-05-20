@@ -1046,6 +1046,7 @@ static int modeset_atomic_prepare_commit_overlay(int fd, struct modeset_output *
 	return 0;
 }
 
+#if 0
 /*
  * A short helper function to compute a changing color value. No need to
  * understand it.
@@ -1087,6 +1088,7 @@ static void modeset_paint_framebuffer(struct modeset_output *out)
 	}
 
 }
+#endif
 
 static void modeset_paint_framebuffer_white(struct modeset_output *out)
 {
