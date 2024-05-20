@@ -98,6 +98,7 @@ struct modeset_output {
 	bool pflip_pending;
 	bool cleanup;
 
+	uint16_t alpha;
 	uint8_t r, g, b;
 	bool r_up, g_up, b_up;
 };
@@ -805,6 +806,7 @@ static struct modeset_output *modeset_output_create(int fd, drmModeRes *res,
 		goto out_obj;
 	}
 
+	out->alpha = 0xffff;
 	return out;
 
 out_obj:
@@ -882,6 +884,7 @@ static struct modeset_output *modeset_output_overlay_create(int fd, drmModeRes *
 		goto out_obj;
 	}
 
+	out->alpha = 10000;
 	return out;
 
 out_obj:
@@ -1036,6 +1039,9 @@ static int modeset_atomic_prepare_commit_overlay(int fd, struct modeset_output *
 		return -1;
 	if (set_drm_object_property(req, plane, "CRTC_H", buf->height) < 0)
 		return -1;
+	if (set_drm_object_property(req, plane, "alpha", out->alpha) < 0) {
+		printf("Unable to set layer alpha\n");
+	}
 
 	return 0;
 }
